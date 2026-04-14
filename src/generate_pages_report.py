@@ -1,0 +1,508 @@
+from __future__ import annotations
+
+# This script generates a static HTML dashboard for GitHub Pages.
+#
+# In the final project architecture, this file is used after the pipeline has run.
+# It reads the latest saved artifacts and turns them into a simple static report.
+#
+# The script:
+# 1. loads the latest prediction artifact
+# 2. loads the saved training metrics artifact
+# 3. creates a styled HTML dashboard
+# 4. writes the output to docs/index.html
+#
+# This allows GitHub Pages to serve the latest model outputs as a lightweight
+# public frontend without requiring a live Python backend.
+
+import json
+from pathlib import Path
+
+import pandas as pd
+
+from src.utils import ensure_directories, load_config
+
+
+def _safe_get(d: dict, key: str, default="N/A"):
+    """Safely get a value from a dictionary."""
+    return d.get(key, default) if isinstance(d, dict) else default
+
+
+def _format_float(value, decimals: int = 3) -> str:
+    """Format floats consistently for display in HTML."""
+    if value is None:
+        return "N/A"
+    try:
+        return f"{float(value):.{decimals}f}"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _format_percent(value) -> str:
+    """Format probabilities as percentages."""
+    if value is None:
+        return "N/A"
+    try:
+        return f"{float(value) * 100:.2f}%"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _dict_to_html_rows(data: dict) -> str:
+    """Convert a simple dictionary to HTML rows."""
+    if not data:
+        return "<tr><td colspan='2'>No data available</td></tr>"
+
+    rows = []
+    for key, value in data.items():
+        rows.append(f"<tr><td>{key}</td><td>{value}</td></tr>")
+    return "\n".join(rows)
+
+
+def _confusion_matrix_html(confusion: list[list[int]]) -> str:
+    """Render the confusion matrix as an HTML table."""
+    if not confusion or len(confusion) != 3:
+        return "<p>No confusion matrix available.</p>"
+
+    labels = ["low", "medium", "high"]
+
+    header = "".join(f"<th>{label}</th>" for label in labels)
+
+    body_rows = []
+    for row_label, row_values in zip(labels, confusion):
+        cells = "".join(f"<td>{value}</td>" for value in row_values)
+        body_rows.append(f"<tr><th>{row_label}</th>{cells}</tr>")
+
+    return f"""
+    <table class="matrix-table">
+        <thead>
+            <tr>
+                <th>Actual \\ Predicted</th>
+                {header}
+            </tr>
+        </thead>
+        <tbody>
+            {''.join(body_rows)}
+        </tbody>
+    </table>
+    """
+
+
+def generate_pages_report(config_path: str = "configs/config.yaml") -> Path:
+    """
+    Generate a static HTML dashboard from saved pipeline artifacts.
+
+    Why this function exists:
+    - GitHub Pages can only serve static files.
+    - The pipeline already saves its results as CSV and JSON artifacts.
+    - This function transforms those artifacts into a human-readable webpage.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to the YAML configuration file.
+
+    Returns
+    -------
+    Path
+        Path to the generated HTML file.
+    """
+    config = load_config(config_path)
+
+    # Ensure the standard project directories exist.
+    ensure_directories(config["paths"])
+
+    # Define artifact input paths.
+    pred_path = Path(config["paths"]["predictions_dir"]) / "latest_prediction.csv"
+    metrics_path = Path(config["paths"]["metrics_dir"]) / "train_metrics.json"
+
+    # Define docs output folder for GitHub Pages.
+    docs_dir = Path("docs")
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    html_path = docs_dir / "index.html"
+    prediction_json_path = docs_dir / "latest_prediction.json"
+    metrics_json_path = docs_dir / "train_metrics.json"
+
+    # Load latest prediction artifact if it exists.
+    prediction = {}
+    if pred_path.exists():
+        pred_df = pd.read_csv(pred_path)
+        if not pred_df.empty:
+            prediction = pred_df.iloc[0].to_dict()
+
+    # Load metrics artifact if it exists.
+    metrics = {}
+    if metrics_path.exists():
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            metrics = json.load(f)
+
+    # Save copies of the key artifacts into docs/ as well.
+    # This is useful for transparency and possible future frontend extensions.
+    with open(prediction_json_path, "w", encoding="utf-8") as f:
+        json.dump(prediction, f, indent=2)
+
+    with open(metrics_json_path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
+    # Extract prediction fields.
+    pred_month = prediction.get("month", "N/A")
+    pred_class = str(prediction.get("predicted_next_month_pressure", "N/A")).capitalize()
+    proba_low = _format_percent(prediction.get("proba_low"))
+    proba_medium = _format_percent(prediction.get("proba_medium"))
+    proba_high = _format_percent(prediction.get("proba_high"))
+
+    # Extract metric fields.
+    accuracy = _format_float(metrics.get("accuracy"))
+    macro_f1 = _format_float(metrics.get("macro_f1"))
+    n_rows_train = _safe_get(metrics, "n_rows_train")
+    n_rows_test = _safe_get(metrics, "n_rows_test")
+
+    train_dist_html = _dict_to_html_rows(metrics.get("train_class_distribution", {}))
+    test_dist_html = _dict_to_html_rows(metrics.get("test_class_distribution", {}))
+    pred_dist_html = _dict_to_html_rows(metrics.get("predicted_class_distribution", {}))
+
+    confusion_html = _confusion_matrix_html(metrics.get("confusion_matrix", []))
+
+    # Create the static HTML page.
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Electronics Price Pressure Dashboard</title>
+    <style>
+        :root {{
+            --bg: #0b1020;
+            --panel: #121a2b;
+            --panel-2: #182338;
+            --text: #f3f4f6;
+            --muted: #b6c2d1;
+            --accent: #4ade80;
+            --accent-2: #60a5fa;
+            --border: #263247;
+            --danger: #f87171;
+        }}
+
+        * {{
+            box-sizing: border-box;
+        }}
+
+        body {{
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }}
+
+        .container {{
+            max-width: 1300px;
+            margin: 0 auto;
+            padding: 32px 20px 48px;
+        }}
+
+        .header {{
+            margin-bottom: 24px;
+        }}
+
+        .header h1 {{
+            margin: 0 0 8px;
+            font-size: 2.6rem;
+        }}
+
+        .header p {{
+            margin: 0;
+            color: var(--muted);
+            font-size: 1.05rem;
+        }}
+
+        .status {{
+            margin-top: 20px;
+            background: rgba(74, 222, 128, 0.15);
+            border: 1px solid rgba(74, 222, 128, 0.35);
+            color: #d1fae5;
+            padding: 14px 16px;
+            border-radius: 14px;
+            font-weight: 600;
+        }}
+
+        .grid {{
+            display: grid;
+            grid-template-columns: 1.2fr 1fr;
+            gap: 24px;
+            margin-top: 28px;
+        }}
+
+        .panel {{
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 22px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+        }}
+
+        .panel h2 {{
+            margin-top: 0;
+            margin-bottom: 18px;
+            font-size: 2rem;
+        }}
+
+        .metrics-grid {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+            margin-bottom: 18px;
+        }}
+
+        .metric-card {{
+            background: var(--panel-2);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 16px;
+        }}
+
+        .metric-label {{
+            font-size: 0.95rem;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }}
+
+        .metric-value {{
+            font-size: 2rem;
+            font-weight: 700;
+        }}
+
+        .probabilities {{
+            margin-top: 18px;
+        }}
+
+        .bar-row {{
+            margin-bottom: 14px;
+        }}
+
+        .bar-label {{
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.95rem;
+            margin-bottom: 6px;
+            color: var(--muted);
+        }}
+
+        .bar-track {{
+            width: 100%;
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            height: 18px;
+            overflow: hidden;
+        }}
+
+        .bar-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-2), var(--accent));
+            border-radius: 999px;
+        }}
+
+        .subsection-title {{
+            margin: 22px 0 12px;
+            font-size: 1.2rem;
+            font-weight: 700;
+        }}
+
+        .three-col {{
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 14px;
+            margin-top: 10px;
+        }}
+
+        .table-card {{
+            background: var(--panel-2);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 14px;
+        }}
+
+        .table-card h3 {{
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 1rem;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+        }}
+
+        th, td {{
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border);
+            text-align: left;
+        }}
+
+        th {{
+            color: var(--muted);
+            font-weight: 600;
+        }}
+
+        .matrix-table th,
+        .matrix-table td {{
+            text-align: center;
+        }}
+
+        .footer {{
+            margin-top: 28px;
+            color: var(--muted);
+            font-size: 0.95rem;
+        }}
+
+        @media (max-width: 1000px) {{
+            .grid {{
+                grid-template-columns: 1fr;
+            }}
+
+            .metrics-grid {{
+                grid-template-columns: repeat(2, 1fr);
+            }}
+
+            .three-col {{
+                grid-template-columns: 1fr;
+            }}
+        }}
+
+        @media (max-width: 640px) {{
+            .metrics-grid {{
+                grid-template-columns: 1fr;
+            }}
+
+            .header h1 {{
+                font-size: 2rem;
+            }}
+
+            .metric-value {{
+                font-size: 1.6rem;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Electronics Price Pressure Dashboard</h1>
+            <p>Static report generated from the latest pipeline artifacts.</p>
+            <div class="status">Latest report generated successfully from saved prediction and metrics artifacts.</div>
+        </div>
+
+        <div class="grid">
+            <section class="panel">
+                <h2>Latest Prediction</h2>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-label">Prediction Month</div>
+                        <div class="metric-value">{pred_month}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Predicted Pressure</div>
+                        <div class="metric-value">{pred_class}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Medium Probability</div>
+                        <div class="metric-value">{proba_medium}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">High Probability</div>
+                        <div class="metric-value">{proba_high}</div>
+                    </div>
+                </div>
+
+                <div class="subsection-title">Prediction Probabilities</div>
+                <div class="probabilities">
+                    <div class="bar-row">
+                        <div class="bar-label"><span>Low</span><span>{proba_low}</span></div>
+                        <div class="bar-track"><div class="bar-fill" style="width:{prediction.get('proba_low', 0) * 100 if prediction else 0}%"></div></div>
+                    </div>
+                    <div class="bar-row">
+                        <div class="bar-label"><span>Medium</span><span>{proba_medium}</span></div>
+                        <div class="bar-track"><div class="bar-fill" style="width:{prediction.get('proba_medium', 0) * 100 if prediction else 0}%"></div></div>
+                    </div>
+                    <div class="bar-row">
+                        <div class="bar-label"><span>High</span><span>{proba_high}</span></div>
+                        <div class="bar-track"><div class="bar-fill" style="width:{prediction.get('proba_high', 0) * 100 if prediction else 0}%"></div></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>Model Metrics</h2>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-label">Accuracy</div>
+                        <div class="metric-value">{accuracy}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Macro F1</div>
+                        <div class="metric-value">{macro_f1}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Train Rows</div>
+                        <div class="metric-value">{n_rows_train}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Test Rows</div>
+                        <div class="metric-value">{n_rows_test}</div>
+                    </div>
+                </div>
+
+                <div class="subsection-title">Class Distributions</div>
+                <div class="three-col">
+                    <div class="table-card">
+                        <h3>Train Distribution</h3>
+                        <table>
+                            <tbody>
+                                {train_dist_html}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="table-card">
+                        <h3>Test Distribution</h3>
+                        <table>
+                            <tbody>
+                                {test_dist_html}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="table-card">
+                        <h3>Predicted Distribution</h3>
+                        <table>
+                            <tbody>
+                                {pred_dist_html}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="subsection-title">Confusion Matrix</div>
+                {confusion_html}
+            </section>
+        </div>
+
+        <div class="footer">
+            <p>
+                This page is generated automatically from the latest saved pipeline artifacts.
+                It is intended to be published through GitHub Pages as a lightweight frontend.
+            </p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+    html_path.write_text(html, encoding="utf-8")
+    return html_path
+
+
+if __name__ == "__main__":
+    output_file = generate_pages_report()
+    print(f"Static report generated: {output_file}")

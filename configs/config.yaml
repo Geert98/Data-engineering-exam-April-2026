@@ -1,0 +1,47 @@
+project:
+  name: electronics_price_pressure
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  external_dir: data/external
+  model_dir: artifacts/models
+  metrics_dir: artifacts/metrics
+  predictions_dir: artifacts/predictions
+
+fred:
+  series_id: PCU33443344
+  url_template: "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+
+news:
+  use_gdelt: true
+  start_date: "2023-01-01"
+  end_date: "2026-03-31"
+  query: '(semiconductor OR memory OR NAND OR DRAM OR SSD OR RAM)'
+  max_records_per_window: 25
+  window: monthly
+  sleep_seconds: 5
+  max_retries: 3
+  retry_base_sleep: 3
+
+features:
+  keywords:
+    - semiconductor
+    - supply chain
+    - shortage
+    - tariff
+    - memory
+    - nand
+    - dram
+    - ssd
+    - ram
+    - electronics
+    - ai demand
+
+target:
+  low_quantile: 0.33
+  high_quantile: 0.67
+
+model:
+  test_size_months: 12
+  random_state: 42
